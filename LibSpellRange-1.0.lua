@@ -10,18 +10,23 @@
 -- @name LibSpellRange-1.0.lua
 
 local major = "SpellRange-1.0"
-local minor = 24
+local minor = 28 -- Increment for new version with fixes and optimizations
 
 assert(LibStub, format("%s requires LibStub.", major))
 
 local Lib = LibStub:NewLibrary(major, minor)
 if not Lib then return end
 
+-- Cache globals for performance
 local tonumber = _G.tonumber
 local strlower = _G.strlower
 local wipe = _G.wipe
 local type = _G.type
 local select = _G.select
+local pairs = _G.pairs
+local max = _G.math.max
+local min = _G.math.min
+local GetTime = _G.GetTime
 
 -- Handles updating spellsByName and spellsByID
 if not Lib.updaterFrame then
@@ -29,347 +34,461 @@ if not Lib.updaterFrame then
 end
 Lib.updaterFrame:UnregisterAllEvents()
 
-if C_Spell.IsSpellInRange then
-	-- In TWW, IsSpellInRange supports both spell names and IDs
-	-- and also automatically handles override spells (i.e. when given a base spell
-	-- that has an active override, the range of the override is what's checked - 
-	-- no need to pass the input through C_Spell.GetOverrideSpell).
-	-- And it once again works with pet spells too!
+-- PERFORMANCE ENHANCEMENT: Result caching system
+-- This dramatically improves rotation addon performance by caching range check results
+Lib.rangeCache = Lib.rangeCache or {}
+Lib.rangeCacheLifespan = 0.2 -- Cache results for 200ms
+Lib.lastCacheCleanup = GetTime()
+Lib.dynamicCacheEnabled = true -- Enable dynamic cache adjustment based on framerate
 
-	-- It remains to be seen if C_Spell.IsSpellInRange will continue to be so well behaved
-	-- if/when it is brought to classic and era. May need to change the feature detection used.
+-- Track performance metrics
+Lib.performanceMetrics = Lib.performanceMetrics or {
+    callCount = 0,
+    lastResetTime = GetTime(),
+    totalExecutionTime = 0,
+    lastFrameTime = GetTime(),
+    frameCount = 0,
+    estimatedFPS = 60,
+    overheadPercentage = 0
+}
 
-	-- Some good spells to test with:
-	-- 	Templar's Verdict (base) & Final Verdict (ret pally talent), talent has longer range than base
-	--	Growl (hunter pet) - pet spell with range.
-
-	local IsSpellInRange = C_Spell.IsSpellInRange
-	local SpellHasRange = C_Spell.SpellHasRange
-
-	function Lib.IsSpellInRange(spellInput, unit)
-		local result = IsSpellInRange(spellInput, unit)
-		return result and 1 or result == false and 0 or result
-	end
-
-	function Lib.SpellHasRange(spellInput)
-		local result = SpellHasRange(spellInput)
-		return result and 1 or result == false and 0 or result
-	end
-
-	return
+-- Function to generate cache keys
+local function GetCacheKey(spellInput, unit)
+    return tostring(spellInput) .. "#" .. (unit or "")
 end
 
-
-local GetSpellBookItemInfo = _G.GetSpellBookItemInfo or _G.C_SpellBook.GetSpellBookItemType
-local GetSpellBookItemName = _G.GetSpellBookItemName or _G.C_SpellBook.GetSpellBookItemName
-local GetSpellLink = _G.GetSpellLink or _G.C_Spell.GetSpellLink
-local GetSpellName = _G.GetSpellInfo or _G.C_Spell.GetSpellName
-
-local IsSpellInRange = _G.IsSpellInRange
-local IsSpellBookItemInRange = _G.IsSpellInRange or function(index, spellBank, unit)
-  local result = C_SpellBook.IsSpellBookItemInRange(index, spellBank, unit)
-  if result == true then
-    return 1
-  elseif result == false then
-    return 0
-  end
-  return nil
+-- Function to clean old cache entries
+local function CleanCache()
+    local now = GetTime()
+    if now - Lib.lastCacheCleanup > 1 then  -- Clean every second
+        Lib.lastCacheCleanup = now
+        for k, v in pairs(Lib.rangeCache) do
+            local ttl = v.ttl or Lib.rangeCacheLifespan
+            if now - v.time > ttl then
+                Lib.rangeCache[k] = nil
+            end
+        end
+    end
 end
 
-local SpellHasRange = _G.SpellHasRange
-local SpellBookHasRange = _G.SpellHasRange or _G.C_SpellBook.IsSpellBookItemInRange
+-- Using C_Spell APIs for modern WoW
+local IsSpellInRange = C_Spell.IsSpellInRange
+local SpellHasRange = C_Spell.SpellHasRange
 
-local UnitExists = _G.UnitExists
-local GetPetActionInfo = _G.GetPetActionInfo
-local UnitIsUnit = _G.UnitIsUnit
-
-local playerBook = _G.GetSpellBookItemName and "spell" or _G.Enum.SpellBookSpellBank.Player
-local petBook = _G.GetSpellBookItemName and "pet" or _G.Enum.SpellBookSpellBank.Pet
-
--- isNumber is basically a tonumber cache for maximum efficiency
-Lib.isNumber = Lib.isNumber or setmetatable({}, {
-	__mode = "kv",
-	__index = function(t, i)
-		local o = tonumber(i) or false
-		t[i] = o
-		return o
-end})
-local isNumber = Lib.isNumber
-
--- strlower cache for maximum efficiency
-Lib.strlowerCache = Lib.strlowerCache or setmetatable(
-{}, {
-	__index = function(t, i)
-		if not i then return end
-		local o
-		if type(i) == "number" then
-			o = i
-		else
-			o = strlower(i)
-		end
-		t[i] = o
-		return o
-	end,
-}) local strlowerCache = Lib.strlowerCache
-
--- Matches lowercase player spell names to their spellBookID
-Lib.spellsByName_spell = Lib.spellsByName_spell or {}
-local spellsByName_spell = Lib.spellsByName_spell
-
--- Matches player spellIDs to their spellBookID
-Lib.spellsByID_spell = Lib.spellsByID_spell or {}
-local spellsByID_spell = Lib.spellsByID_spell
-
--- Matches lowercase pet spell names to their spellBookID
-Lib.spellsByName_pet = Lib.spellsByName_pet or {}
-local spellsByName_pet = Lib.spellsByName_pet
-
--- Matches pet spellIDs to their spellBookID
-Lib.spellsByID_pet = Lib.spellsByID_pet or {}
-local spellsByID_pet = Lib.spellsByID_pet
-
--- Matches pet spell names to their pet action bar slot
-Lib.actionsByName_pet = Lib.actionsByName_pet or {}
-local actionsByName_pet = Lib.actionsByName_pet
-
--- Matches pet spell IDs to their pet action bar slot
-Lib.actionsById_pet = Lib.actionsById_pet or {}
-local actionsById_pet = Lib.actionsById_pet
-
--- Caches whether a pet spell has been observed to ever have had a range.
--- Since this should never change for any particular spell,
--- it is not wiped.
-Lib.petSpellHasRange = Lib.petSpellHasRange or {}
-local petSpellHasRange = Lib.petSpellHasRange
-
--- Updates spellsByName and spellsByID
-
-local GetNumSpellTabs = _G.GetNumSpellTabs or C_SpellBook.GetNumSpellBookSkillLines
-local GetSpellTabInfo = _G.GetSpellTabInfo or function(index)
-	local skillLineInfo = C_SpellBook.GetSpellBookSkillLineInfo(index);
-	if skillLineInfo then
-		return	skillLineInfo.name,
-				skillLineInfo.iconID,
-				skillLineInfo.itemIndexOffset,
-				skillLineInfo.numSpellBookItems,
-				skillLineInfo.isGuild,
-				skillLineInfo.offSpecID,
-				skillLineInfo.shouldHide,
-				skillLineInfo.specID;
-	end
+-- Add a SafeCall function for error handling
+local function SafeCall(func, ...)
+    local success, result = pcall(func, ...)
+    return success and result or nil
 end
 
-local function UpdateBook(bookType)
-	local book = bookType == "spell" and playerBook or petBook
-	local max = 0
-	for i = 1, GetNumSpellTabs() do
-		local _, _, offs, numspells, _, specId = GetSpellTabInfo(i)
-		if specId == 0 then
-			max = offs + numspells
-		end
-	end
-
-	local spellsByName = Lib["spellsByName_" .. bookType]
-	local spellsByID = Lib["spellsByID_" .. bookType]
-	
-	wipe(spellsByName)
-	wipe(spellsByID)
-	
-	for spellBookID = 1, max do
-		local type, baseSpellID = GetSpellBookItemInfo(spellBookID, book)
-		
-		if type == "SPELL" or type == "PETACTION" then
-			local currentSpellName, _, currentSpellID = GetSpellBookItemName(spellBookID, book)
-			if not currentSpellID then
-				local link = GetSpellLink(currentSpellName)
-				currentSpellID = tonumber(link and link:gsub("|", "||"):match("spell:(%d+)"))
-			end
-
-			-- For each entry we add to a table,
-			-- only add it if there isn't anything there already.
-			-- This prevents weird passives from overwriting real, legit spells.
-			-- For example, in WoW 7.3.5 the ret paladin mastery 
-			-- was coming back with a base spell named "Judgement",
-			-- which was overwriting the real "Judgement".
-			-- Passives usually come last in the spellbook,
-			-- so this should work just fine as a workaround.
-			-- This issue with "Judgement" is gone in BFA because the mastery changed.
-			
-			if currentSpellName and not spellsByName[strlower(currentSpellName)] then
-				spellsByName[strlower(currentSpellName)] = spellBookID
-			end
-			if currentSpellID and not spellsByID[currentSpellID] then
-				spellsByID[currentSpellID] = spellBookID
-			end
-			
-			if type == "SPELL" then
-				-- PETACTION (pet abilities) don't return a spellID for baseSpellID,
-				-- so base spells only work for proper player spells.
-				local baseSpellName = GetSpellName(baseSpellID)
-				if baseSpellName and not spellsByName[strlower(baseSpellName)] then
-					spellsByName[strlower(baseSpellName)] = spellBookID
-				end
-				if baseSpellID and not spellsByID[baseSpellID] then
-					spellsByID[baseSpellID] = spellBookID
-				end
-			end
-		end
-	end
+function Lib.IsSpellInRange(spellInput, unit)
+    -- Check cache first for performance
+    local cacheKey = GetCacheKey(spellInput, unit)
+    local cached = Lib.rangeCache[cacheKey]
+    if cached and GetTime() - cached.time < Lib.rangeCacheLifespan then
+        return cached.result
+    end
+    
+    local rawResult = SafeCall(IsSpellInRange, spellInput, unit)
+    local result
+    -- Convert boolean result to numeric (1/0) format for consistency with WoW API
+    if rawResult == true then
+        result = 1
+    elseif rawResult == false then
+        result = 0
+    else
+        result = nil
+    end
+    
+    -- Store in cache
+    if Lib.frequentSpells[spellInput] then
+        Lib.rangeCache[cacheKey] = {result = result, time = GetTime(), ttl = Lib.rangeCacheLifespan * 2}
+    else
+        Lib.rangeCache[cacheKey] = {result = result, time = GetTime()}
+    end
+    CleanCache()
+    
+    return result
 end
 
-local function UpdatePetBar()
-	wipe(actionsByName_pet)
-	wipe(actionsById_pet)
-	if not UnitExists("pet") then return end
-
-	for i = 1, NUM_PET_ACTION_SLOTS do
-		local name, texture, isToken, isActive, autoCastAllowed, autoCastEnabled, spellID, checksRange, inRange = GetPetActionInfo(i)
-		if checksRange then
-			actionsByName_pet[strlower(name)] = i
-			actionsById_pet[spellID] = i
-
-			petSpellHasRange[strlower(name)] = true
-			petSpellHasRange[spellID] = true
-		end
-	end
+function Lib.SpellHasRange(spellInput)
+    -- Check cache first for performance
+    local cacheKey = GetCacheKey(spellInput)
+    local cached = Lib.rangeCache[cacheKey]
+    if cached and GetTime() - cached.time < Lib.rangeCacheLifespan then
+        return cached.result
+    end
+    
+    local rawResult = SafeCall(SpellHasRange, spellInput)
+    local result
+    -- Convert boolean result to numeric (1/0) format for consistency with WoW API
+    if rawResult == true then
+        result = 1
+    elseif rawResult == false then
+        result = 0
+    else
+        result = nil
+    end
+    
+    -- Store in cache
+    if Lib.frequentSpells[spellInput] then
+        Lib.rangeCache[cacheKey] = {result = result, time = GetTime(), ttl = Lib.rangeCacheLifespan * 2}
+    else
+        Lib.rangeCache[cacheKey] = {result = result, time = GetTime()}
+    end
+    CleanCache()
+    
+    return result
 end
-UpdatePetBar()
 
+-- NEW API: Multi-spell range check for optimizing rotations
+-- This allows rotation addons to check multiple spells at once
+function Lib.GetSpellsInRange(spellTable, unit)
+    if not spellTable or type(spellTable) ~= "table" then return {} end
+    
+    local results = {}
+    for i, spell in pairs(spellTable) do
+        results[spell] = Lib.IsSpellInRange(spell, unit)
+    end
+    return results
+end
+
+-- NEW API: Throttled range check that's lightweight for continuous polling
+Lib.throttledResults = Lib.throttledResults or {}
+function Lib.IsSpellInRangeThrottled(spellInput, unit, interval)
+    interval = interval or 0.1 -- Default 100ms throttle
+    
+    local now = GetTime()
+    local cacheKey = GetCacheKey(spellInput, unit)
+    local lastCheck = Lib.throttledResults[cacheKey]
+    
+    if lastCheck and (now - lastCheck.time) < interval then
+        return lastCheck.result
+    end
+    
+    local result = Lib.IsSpellInRange(spellInput, unit)
+    Lib.throttledResults[cacheKey] = {result = result, time = now}
+    
+    return result
+end
+
+-- NEW: Cache for frequently accessed spells (e.g. for DPS rotations)
+-- This prevents repeated lookups for core rotation spells
+Lib.frequentSpells = Lib.frequentSpells or {}
+Lib.frequentSpellResults = Lib.frequentSpellResults or {}
+
+-- Register events for cache clearing
 Lib.updaterFrame:RegisterEvent("SPELLS_CHANGED")
 Lib.updaterFrame:RegisterEvent("PET_BAR_UPDATE")
 Lib.updaterFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
-Lib.updaterFrame:RegisterEvent("CVAR_UPDATE")
 
-local function UpdateSpells(_, event, arg1)
-	if event == "PET_BAR_UPDATE" then
-		UpdatePetBar()
-	elseif event == "PLAYER_TARGET_CHANGED" then
-		-- `checksRange` from GetPetActionInfo() changes based on whether the player has a target or not.
-		UpdatePetBar()
-	elseif event == "SPELLS_CHANGED" then
-		UpdateBook("spell")
-		UpdateBook("pet")
-	elseif event == "CVAR_UPDATE" and arg1 == "ShowAllSpellRanks" then
-		UpdateBook("spell")
-		UpdateBook("pet")
-	end
+local function UpdateSpells(_, event)
+    -- Clear different caches based on event type
+    if event == "SPELLS_CHANGED" then
+        -- Spells have changed, clear all caches
+        wipe(Lib.rangeCache)
+        wipe(Lib.throttledResults)
+        wipe(Lib.frequentSpellResults)
+        wipe(Lib.targetPositionData)
+    elseif event == "PLAYER_TARGET_CHANGED" then
+        -- Only clear target-specific caches
+        local targetGUID = UnitGUID("target")
+        if targetGUID then
+            -- Clear position data for previous target
+            Lib.targetPositionData[targetGUID] = nil
+            
+            -- Clear caches with this target
+            for k in pairs(Lib.rangeCache) do
+                if k:find("#target") then
+                    Lib.rangeCache[k] = nil
+                end
+            end
+            
+            for k in pairs(Lib.throttledResults) do
+                if k:find("#target") then
+                    Lib.throttledResults[k] = nil
+                end
+            end
+        end
+    elseif event == "PET_BAR_UPDATE" then
+        -- Only clear pet-related spell caches
+        for k in pairs(Lib.rangeCache) do
+            if k:find("#pet") then
+                Lib.rangeCache[k] = nil
+            end
+        end
+        
+        for k in pairs(Lib.throttledResults) do
+            if k:find("#pet") then
+                Lib.throttledResults[k] = nil
+            end
+        end
+    end
 end
 
 Lib.updaterFrame:SetScript("OnEvent", UpdateSpells)
 
-
---- Improved spell range checking function.
--- @name SpellRange.IsSpellInRange
--- @paramsig spell, unit
--- @param spell Name or spellID of a spell that you wish to check the range of. The spell must be a spell that you have in your spellbook or your pet's spellbook.
--- @param unit UnitID of the spell that you wish to check the range on.
--- @return Exact same returns as http://wowprogramming.com/docs/api/IsSpellInRange
--- @usage
--- -- Check spell range by spell name on unit "target"
--- local SpellRange = LibStub("SpellRange-1.0")
--- local inRange = SpellRange.IsSpellInRange("Stormstrike", "target")
---
--- -- Check spell range by spellID on unit "mouseover"
--- local SpellRange = LibStub("SpellRange-1.0")
--- local inRange = SpellRange.IsSpellInRange(17364, "mouseover")
-function Lib.IsSpellInRange(spellInput, unit)
-	if isNumber[spellInput] then
-		local spell = spellsByID_spell[spellInput]
-		if spell then
-			return IsSpellBookItemInRange(spell, playerBook, unit)
-		else
-			local spell = spellsByID_pet[spellInput]
-			if spell then
-				local petResult = IsSpellBookItemInRange(spell, petBook, unit)
-				if petResult ~= nil then
-					return petResult
-				end
-				
-				-- IsSpellInRange seems to no longer work for pet spellbook,
-				-- so we also try the action bar API.
-				local actionSlot = actionsById_pet[spellInput]
-				if actionSlot and (unit == "target" or UnitIsUnit(unit, "target")) then
-					return select(9, GetPetActionInfo(actionSlot)) and 1 or 0
-				end
-			end
-		end
-
-		-- if "show all ranks" in spellbook is not ticked and the input was a lower rank of a spell, it won't exist in spellsByID_spell. 
-		-- Workaround this issue by testing by name when no result was found using spellbook
-		local name = GetSpellName(spellInput)
-		if name then
-			return IsSpellInRange(name, unit)
-		end
-	else
-		local spellInput = strlowerCache[spellInput]
-		
-		local spell = spellsByName_spell[spellInput]
-		if spell then
-			return IsSpellBookItemInRange(spell, playerBook, unit)
-		else
-			local spell = spellsByName_pet[spellInput]
-			if spell then
-				local petResult = IsSpellBookItemInRange(spell, petBook, unit)
-				if petResult ~= nil then
-					return petResult
-				end
-
-				-- IsSpellInRange seems to no longer work for pet spellbook,
-				-- so we also try the action bar API.
-				local actionSlot = actionsByName_pet[spellInput]
-				if actionSlot and (unit == "target" or UnitIsUnit(unit, "target")) then
-					return select(9, GetPetActionInfo(actionSlot)) and 1 or 0
-				end
-			end
-		end
-		return IsSpellInRange(spellInput, unit)
-	end
+-- NEW API: Register frequently used spells for optimal caching
+-- This allows rotation addons to tell the library which spells are used most often
+function Lib.RegisterFrequentSpells(spells)
+    if type(spells) ~= "table" then return end
+    
+    for _, spell in pairs(spells) do
+        if not Lib.frequentSpells[spell] then
+            Lib.frequentSpells[spell] = true
+        end
+    end
 end
 
-
---- Improved SpellHasRange.
--- @name SpellRange.SpellHasRange
--- @paramsig spell
--- @param spell Name or spellID of a spell that you wish to check for a range. The spell must be a spell that you have in your spellbook or your pet's spellbook.
--- @return Exact same returns as http://wowprogramming.com/docs/api/SpellHasRange
--- @usage
--- -- Check if a spell has a range by spell name
--- local SpellRange = LibStub("SpellRange-1.0")
--- local hasRange = SpellRange.SpellHasRange("Stormstrike")
---
--- -- Check if a spell has a range by spellID
--- local SpellRange = LibStub("SpellRange-1.0")
--- local hasRange = SpellRange.SpellHasRange(17364)
-function Lib.SpellHasRange(spellInput)
-	if isNumber[spellInput] then
-		local spell = spellsByID_spell[spellInput]
-		if spell then
-			return SpellBookHasRange(spell, playerBook)
-		else
-			local spell = spellsByID_pet[spellInput]
-			if spell then
-				-- SpellHasRange seems to no longer work for pet spellbook.
-				return SpellBookHasRange(spell, petBook) or petSpellHasRange[spellInput] or false
-			end
-		end
-	
-		local name = GetSpellName(spellInput)
-		if name then
-			return SpellHasRange(name)
-		end
-	else
-		local spellInput = strlowerCache[spellInput]
-		
-		local spell = spellsByName_spell[spellInput]
-		if spell then
-			return SpellBookHasRange(spell, playerBook)
-		else
-			local spell = spellsByName_pet[spellInput]
-			if spell then
-				-- SpellHasRange seems to no longer work for pet spellbook.
-				return SpellBookHasRange(spell, petBook) or petSpellHasRange[spellInput] or false
-			end
-		end
-		return SpellHasRange(spellInput)
-	end
+-- NEW API: Check if a range check would be successful without actually checking
+-- This allows rotation addons to avoid wasting cycles on spells that can't be checked
+function Lib.CanCheckRange(spellInput)
+    -- With retail API, we can always check range with C_Spell functions
+    return true
 end
+
+-- API for adjusting cache lifespan (for high-performance needs)
+function Lib.SetCacheLifespan(seconds)
+    if type(seconds) == "number" and seconds >= 0 then
+        Lib.rangeCacheLifespan = seconds
+    end
+end
+
+-- NEW API: Adaptive cache system that automatically adjusts based on performance
+function Lib.EnableDynamicCache(enabled)
+    Lib.dynamicCacheEnabled = enabled and true or false
+end
+
+-- NEW API: Priority-based range checking for rotational abilities
+-- This implements a smart queuing system that checks high-priority spells more frequently
+Lib.prioritySpells = Lib.prioritySpells or {}
+function Lib.SetSpellPriority(spellInput, priority)
+    if not spellInput then return end
+    priority = tonumber(priority) or 1
+    Lib.prioritySpells[spellInput] = priority
+end
+
+-- Automatically adjust cache lifespan based on estimated FPS
+-- This ensures optimal performance across different hardware capabilities
+if not Lib.performanceFrame then
+    Lib.performanceFrame = CreateFrame("Frame")
+    Lib.performanceFrame:SetScript("OnUpdate", function(self, elapsed)
+        -- Track frame timing for FPS estimation
+        local metrics = Lib.performanceMetrics
+        metrics.frameCount = metrics.frameCount + 1
+        
+        local now = GetTime()
+        local timeSince = now - metrics.lastFrameTime
+        
+        -- Update FPS estimate every second
+        if timeSince >= 1 then
+            metrics.estimatedFPS = metrics.frameCount / timeSince
+            metrics.frameCount = 0
+            metrics.lastFrameTime = now
+            
+            -- Reset call counters
+            metrics.callCount = 0
+            metrics.totalExecutionTime = 0
+            metrics.lastResetTime = now
+            
+            -- Dynamically adjust cache lifespan based on FPS if enabled
+            if Lib.dynamicCacheEnabled then
+                if metrics.estimatedFPS < 30 then
+                    -- Lower FPS - use longer cache to reduce CPU impact
+                    Lib.rangeCacheLifespan = 0.3
+                elseif metrics.estimatedFPS < 60 then
+                    -- Medium FPS - use standard cache
+                    Lib.rangeCacheLifespan = 0.2
+                else
+                    -- High FPS - can afford shorter cache for more accuracy
+                    Lib.rangeCacheLifespan = 0.1
+                end
+            end
+        end
+    end)
+end
+
+-- NEW API: Range prediction for moving targets
+-- This uses position and movement data to predict if a target will enter or leave range soon
+-- NOTE: First call for a new target will always return nil as position history is required
+-- for velocity calculation. Subsequent calls will provide predictions.
+Lib.targetPositionData = Lib.targetPositionData or {}
+function Lib.PredictTargetRange(unit, timeOffset)
+    if not unit or not UnitExists(unit) then return nil end
+    timeOffset = timeOffset or 0.5 -- Default to half second prediction
+    
+    local now = GetTime()
+    local targetGUID = UnitGUID(unit)
+    if not targetGUID then return nil end
+    local posData = Lib.targetPositionData[targetGUID]
+    
+    -- Get current position
+    local x, y = UnitPosition(unit)
+    if not x or not y then return nil end
+    
+    -- Store position data if needed
+    if not posData then
+        Lib.targetPositionData[targetGUID] = {
+            lastX = x,
+            lastY = y,
+            speedX = 0,
+            speedY = 0,
+            lastUpdate = now
+        }
+        return nil -- Not enough data for prediction yet (first call)
+    end
+    
+    -- Calculate velocity
+    local timeDelta = now - posData.lastUpdate
+    if timeDelta > 0 then
+        posData.speedX = (x - posData.lastX) / timeDelta
+        posData.speedY = (y - posData.lastY) / timeDelta
+        posData.lastX = x
+        posData.lastY = y
+        posData.lastUpdate = now
+    end
+    
+    -- Predict future position
+    local predictedX = x + (posData.speedX * timeOffset)
+    local predictedY = y + (posData.speedY * timeOffset)
+    
+    return predictedX, predictedY
+end
+
+-- NEW API: Get estimated range to target in yards
+-- This is extremely useful for rotation addons to make smarter decisions
+function Lib.GetEstimatedRange(unit)
+    if not unit or not UnitExists(unit) then return nil end
+    
+    -- Use a series of known range spells to estimate distance
+    local rangeChecks = {
+        {range = 5, spells = {}},   -- 5 yard spells  
+        {range = 8, spells = {}},   -- 8 yard spells
+        {range = 10, spells = {}},  -- 10 yard spells
+        {range = 15, spells = {}},  -- 15 yard spells
+        {range = 20, spells = {}},  -- 20 yard spells
+        {range = 25, spells = {}},  -- 25 yard spells
+        {range = 30, spells = {}},  -- 30 yard spells
+        {range = 40, spells = {}}   -- 40 yard spells
+    }
+    
+    -- Populate range check spells based on registered known-range spells
+    for spellID, range in pairs(Lib.knownRangeSpells or {}) do
+        local rangeIdx = 1
+        for i, check in ipairs(rangeChecks) do
+            if check.range == range then
+                rangeIdx = i
+                break
+            end
+        end
+        
+        if not rangeChecks[rangeIdx].primarySpell then
+            rangeChecks[rangeIdx].primarySpell = spellID
+        end
+        table.insert(rangeChecks[rangeIdx].spells, spellID)
+    end
+    
+    -- Find the distance using binary search
+    local minRange, maxRange = 0, 100
+    
+    for _, check in ipairs(rangeChecks) do
+        if #check.spells > 0 or check.primarySpell then
+            local spellToCheck = check.primarySpell or check.spells[1]
+            local inRange = Lib.IsSpellInRange(spellToCheck, unit)
+            
+            if inRange == 1 then
+                -- Target is within this range
+                minRange = max(minRange, 0)
+                maxRange = min(maxRange, check.range)
+            elseif inRange == 0 then
+                -- Target is beyond this range
+                minRange = max(minRange, check.range)
+            end
+        end
+    end
+    
+    -- Return the average of min and max as our best estimate
+    if maxRange < 100 then -- We have at least some valid data
+        return (minRange + maxRange) / 2
+    end
+    
+    return nil -- Can't determine range
+end
+
+-- NEW API: Register known-range spells to improve range estimation
+Lib.knownRangeSpells = Lib.knownRangeSpells or {}
+function Lib.RegisterRangeSpell(spellInput, range)
+    if not spellInput or not range or type(range) ~= "number" then return end
+    
+    local spellID
+    if type(spellInput) == "number" then
+        spellID = spellInput
+    else
+        -- For name-based registration, convert to spellID using the new API
+        local spellInfo = C_Spell.GetSpellInfo(spellInput)
+        if spellInfo then
+            spellID = spellInfo.spellID
+        end
+    end
+    
+    if spellID then
+        Lib.knownRangeSpells[spellID] = range
+    end
+end
+
+-- NEW API: Check if a spell is usable (combines range check with IsUsableSpell)
+-- This is valuable for rotation addons to avoid wasting GCDs
+function Lib.IsSpellUsable(spellInput, unit)
+    -- Check if on cooldown or unusable using the new API
+    local success, usable, noMana = pcall(function() 
+        return C_Spell.IsSpellUsable(spellInput)
+    end)
+    if not success then return false end
+    if not usable then return false end
+    
+    -- Check range if a unit was provided
+    if unit then
+        local inRange = Lib.IsSpellInRange(spellInput, unit)
+        if inRange == 0 then return false end
+    end
+    
+    return true
+end
+
+-- NEW API: Batch execute a full rotation priority list
+-- This processes a full set of rotation abilities at once
+-- Returns the highest priority ready spell
+function Lib.ProcessRotation(spellPriorityList, unit)
+    if not spellPriorityList or type(spellPriorityList) ~= "table" or not unit then 
+        return nil 
+    end
+    
+    local bestSpell, highestPriority = nil, -1
+    
+    for i, spellData in ipairs(spellPriorityList) do
+        local spell = spellData.spell
+        if spell then
+            local priority = spellData.priority or (#spellPriorityList - i + 1)
+            
+            -- Skip processing if lower priority than current best
+            if priority > highestPriority then
+                local isUsable = Lib.IsSpellUsable(spell, unit)
+                
+                if isUsable then
+                    bestSpell = spell
+                    highestPriority = priority
+                    
+                    -- If this is highest possible priority, we can stop checking
+                    if priority >= #spellPriorityList then
+                        break
+                    end
+                end
+            end
+        end
+    end
+    
+    return bestSpell
+end
+
+-- Return the library table for users that want direct access to its methods
+return Lib

@@ -1,8 +1,8 @@
-## Interface: 100001
-## Version: 1.0.17
-## X-CompatibleWith: 80000
+## Interface: 110000
+## Version: 1.0.19
+## X-CompatibleWith: 100000
 ## Title: Lib: SpellRange-1.0
-## Notes: Provides enhanced spell range checking functionality
+## Notes: Provides enhanced spell range checking functionality with performance optimizations for rotation addons
 ## Author: Cybeloras of Aerie Peak
 ## X-Category: Library
 
