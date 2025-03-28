@@ -57,13 +57,13 @@ if C_Spell.IsSpellInRange then
 end
 
 
-local GetSpellBookItemInfo = _G.GetSpellBookItemInfo or _G.C_SpellBook.GetSpellBookItemType
-local GetSpellBookItemName = _G.GetSpellBookItemName or _G.C_SpellBook.GetSpellBookItemName
-local GetSpellLink = _G.GetSpellLink or _G.C_Spell.GetSpellLink
-local GetSpellName = _G.GetSpellInfo or _G.C_Spell.GetSpellName
+local GetSpellBookItemInfo = C_SpellBook.GetSpellBookItemType
+local GetSpellBookItemName = C_SpellBook.GetSpellBookItemName
+local GetSpellLink = C_Spell.GetSpellLink
+local GetSpellName = C_Spell.GetSpellName
 
-local IsSpellInRange = _G.IsSpellInRange
-local IsSpellBookItemInRange = _G.IsSpellInRange or function(index, spellBank, unit)
+local IsSpellInRange = C_Spell.IsSpellInRange
+local IsSpellBookItemInRange = function(index, spellBank, unit)
   local result = C_SpellBook.IsSpellBookItemInRange(index, spellBank, unit)
   if result == true then
     return 1
@@ -73,15 +73,15 @@ local IsSpellBookItemInRange = _G.IsSpellInRange or function(index, spellBank, u
   return nil
 end
 
-local SpellHasRange = _G.SpellHasRange
-local SpellBookHasRange = _G.SpellHasRange or _G.C_SpellBook.IsSpellBookItemInRange
+local SpellHasRange = C_Spell.SpellHasRange
+local SpellBookHasRange = C_SpellBook.IsSpellBookItemInRange
 
 local UnitExists = _G.UnitExists
 local GetPetActionInfo = _G.GetPetActionInfo
 local UnitIsUnit = _G.UnitIsUnit
 
-local playerBook = _G.GetSpellBookItemName and "spell" or _G.Enum.SpellBookSpellBank.Player
-local petBook = _G.GetSpellBookItemName and "pet" or _G.Enum.SpellBookSpellBank.Pet
+local playerBook = Enum.SpellBookSpellBank.Player
+local petBook = Enum.SpellBookSpellBank.Pet
 
 -- isNumber is basically a tonumber cache for maximum efficiency
 Lib.isNumber = Lib.isNumber or setmetatable({}, {
@@ -141,9 +141,9 @@ local petSpellHasRange = Lib.petSpellHasRange
 
 -- Updates spellsByName and spellsByID
 
-local GetNumSpellTabs = _G.GetNumSpellTabs or C_SpellBook.GetNumSpellBookSkillLines
-local GetSpellTabInfo = _G.GetSpellTabInfo or function(index)
-	local skillLineInfo = C_SpellBook.GetSpellBookSkillLineInfo(index);
+local GetNumSpellTabs = C_SpellBook.GetNumSpellBookSkillLines
+local GetSpellTabInfo = function(index)
+	local skillLineInfo = C_SpellBook.GetSpellBookSkillLineInfo(index)
 	if skillLineInfo then
 		return	skillLineInfo.name,
 				skillLineInfo.iconID,
@@ -152,7 +152,7 @@ local GetSpellTabInfo = _G.GetSpellTabInfo or function(index)
 				skillLineInfo.isGuild,
 				skillLineInfo.offSpecID,
 				skillLineInfo.shouldHide,
-				skillLineInfo.specID;
+				skillLineInfo.specID
 	end
 end
 
