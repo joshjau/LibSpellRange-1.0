@@ -10,7 +10,7 @@
 -- @name LibSpellRange-1.0.lua
 
 local major = "SpellRange-1.0"
-local minor = 24
+local minor = 25
 
 assert(LibStub, format("%s requires LibStub.", major))
 
@@ -35,9 +35,6 @@ if C_Spell.IsSpellInRange then
 	-- that has an active override, the range of the override is what's checked - 
 	-- no need to pass the input through C_Spell.GetOverrideSpell).
 	-- And it once again works with pet spells too!
-
-	-- It remains to be seen if C_Spell.IsSpellInRange will continue to be so well behaved
-	-- if/when it is brought to classic and era. May need to change the feature detection used.
 
 	-- Some good spells to test with:
 	-- 	Templar's Verdict (base) & Final Verdict (ret pally talent), talent has longer range than base
@@ -100,7 +97,7 @@ local isNumber = Lib.isNumber
 Lib.strlowerCache = Lib.strlowerCache or setmetatable(
 {}, {
 	__index = function(t, i)
-		if not i then return end
+		if not i then return nil end
 		local o
 		if type(i) == "number" then
 			o = i
@@ -273,6 +270,7 @@ Lib.updaterFrame:SetScript("OnEvent", UpdateSpells)
 -- local SpellRange = LibStub("SpellRange-1.0")
 -- local inRange = SpellRange.IsSpellInRange(17364, "mouseover")
 function Lib.IsSpellInRange(spellInput, unit)
+	if not spellInput then return nil end
 	if isNumber[spellInput] then
 		local spell = spellsByID_spell[spellInput]
 		if spell then
@@ -302,6 +300,7 @@ function Lib.IsSpellInRange(spellInput, unit)
 		end
 	else
 		local spellInput = strlowerCache[spellInput]
+		if not spellInput then return nil end
 		
 		local spell = spellsByName_spell[spellInput]
 		if spell then
@@ -341,6 +340,7 @@ end
 -- local SpellRange = LibStub("SpellRange-1.0")
 -- local hasRange = SpellRange.SpellHasRange(17364)
 function Lib.SpellHasRange(spellInput)
+	if not spellInput then return nil end
 	if isNumber[spellInput] then
 		local spell = spellsByID_spell[spellInput]
 		if spell then
@@ -359,6 +359,7 @@ function Lib.SpellHasRange(spellInput)
 		end
 	else
 		local spellInput = strlowerCache[spellInput]
+		if not spellInput then return nil end
 		
 		local spell = spellsByName_spell[spellInput]
 		if spell then
