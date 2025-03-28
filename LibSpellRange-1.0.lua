@@ -53,6 +53,7 @@ if C_Spell.IsSpellInRange then
 		return result and 1 or result == false and 0 or result
 	end
 
+	-- Modern API handles all cases including pet spells and overrides, so we can return early
 	return
 end
 
@@ -134,9 +135,11 @@ Lib.actionsById_pet = Lib.actionsById_pet or {}
 local actionsById_pet = Lib.actionsById_pet
 
 -- Caches whether a pet spell has been observed to ever have had a range.
--- Since this should never change for any particular spell,
--- it is not wiped.
-Lib.petSpellHasRange = Lib.petSpellHasRange or {}
+-- Uses weak table to allow garbage collection of unused entries.
+-- Not wiped since pet spell ranges are constant per spell.
+Lib.petSpellHasRange = Lib.petSpellHasRange or setmetatable({}, {
+	__mode = "kv"  -- Weak table for GC
+})
 local petSpellHasRange = Lib.petSpellHasRange
 
 -- Updates spellsByName and spellsByID
@@ -154,6 +157,14 @@ local GetSpellTabInfo = function(index)
 				skillLineInfo.shouldHide,
 				skillLineInfo.specID
 	end
+end
+
+local function GetSpellIDFromLink(link)
+	if not link then return nil end
+	-- Extract spellID from link, handling malformed links gracefully
+	-- Returns nil for invalid/missing links
+	local spellID = tonumber(link:gsub("|", "||"):match("spell:(%d+)"))
+	return spellID or nil
 end
 
 local function UpdateBook(bookType)
@@ -179,7 +190,7 @@ local function UpdateBook(bookType)
 			local currentSpellName, _, currentSpellID = GetSpellBookItemName(spellBookID, book)
 			if not currentSpellID then
 				local link = GetSpellLink(currentSpellName)
-				currentSpellID = tonumber(link and link:gsub("|", "||"):match("spell:(%d+)"))
+				currentSpellID = GetSpellIDFromLink(link)
 			end
 
 			-- For each entry we add to a table,
@@ -225,6 +236,7 @@ local function UpdatePetBar()
 			actionsByName_pet[strlower(name)] = i
 			actionsById_pet[spellID] = i
 
+			-- Cache both name and ID for faster lookups in range checks
 			petSpellHasRange[strlower(name)] = true
 			petSpellHasRange[spellID] = true
 		end
